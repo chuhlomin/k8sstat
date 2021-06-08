@@ -22,8 +22,6 @@ type NodeReport struct {
 }
 
 func handlerStats(w http.ResponseWriter, r *http.Request) {
-	w.Header().Add("Content-Type", "text/javascript")
-
 	reports, err := getNodesReport(clientset)
 	if err != nil {
 		http.Error(w, errors.Wrap(err, "get nodes report").Error(), 400)
@@ -36,6 +34,7 @@ func handlerStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.Header().Add("Content-Type", "text/csv")
 	w.Write(out)
 }
 
@@ -74,7 +73,7 @@ func createCSV(reports []NodeReport) ([]byte, error) {
 	buf := new(bytes.Buffer)
 	w := csv.NewWriter(buf)
 
-	if err := w.Write([]string{"node", "pod", "cpu_req"}); err != nil {
+	if err := w.Write([]string{"node", "pod", "cpu_req", "cpu_lim", "mem_req", "mem_lim"}); err != nil {
 		return nil, err
 	}
 
@@ -85,13 +84,22 @@ func createCSV(reports []NodeReport) ([]byte, error) {
 		}
 
 		for _, pod := range node.Pods {
-			cpuReq := node.Reqs[pod.Name][corev1.ResourceCPU]
+			cpuReq, cpuLimit, memoryReq, memoryLimit := node.Reqs[pod.Name][corev1.ResourceCPU],
+				node.Limits[pod.Name][corev1.ResourceCPU],
+				node.Reqs[pod.Name][corev1.ResourceMemory],
+				node.Limits[pod.Name][corev1.ResourceMemory]
 			fractionCPUReq := float64(cpuReq.MilliValue()) / float64(allocatable.Cpu().MilliValue()) * 100
+			fractionCPULimit := float64(cpuLimit.MilliValue()) / float64(allocatable.Cpu().MilliValue()) * 100
+			fractionMemoryReq := float64(memoryReq.Value()) / float64(allocatable.Memory().Value()) * 100
+			fractionMemoryLimit := float64(memoryLimit.Value()) / float64(allocatable.Memory().Value()) * 100
 
 			if err := w.Write([]string{
 				node.Node.ObjectMeta.Name,
 				pod.ObjectMeta.Name,
 				fmt.Sprintf("%d", int64(fractionCPUReq)*10),
+				fmt.Sprintf("%d", int64(fractionCPULimit)*10),
+				fmt.Sprintf("%d", int64(fractionMemoryReq)*10),
+				fmt.Sprintf("%d", int64(fractionMemoryLimit)*10),
 			}); err != nil {
 				return nil, err
 			}

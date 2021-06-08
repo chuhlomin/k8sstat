@@ -60,7 +60,7 @@ func run() error {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.Compress(5, "application/json"))
+	r.Use(middleware.Compress(5, "application/csv"))
 
 	r.Get("/health", handlerHealth)
 	r.Get("/stats", handlerStats)
