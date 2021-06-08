@@ -2,23 +2,25 @@ package main
 
 import (
 	"context"
-	"encoding/csv"
 	"flag"
-	"fmt"
 	"log"
+	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"time"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/pkg/errors"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
-	resourcehelper "k8s.io/kubectl/pkg/util/resource"
 
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 )
+
+var clientset *kubernetes.Clientset
 
 func main() {
 	log.Println("Starting...")
@@ -30,80 +32,6 @@ func main() {
 	log.Println("Stopped")
 }
 
-type NodeReport struct {
-	corev1.Node
-	Pods   []corev1.Pod
-	Reqs   map[string]corev1.ResourceList
-	Limits map[string]corev1.ResourceList
-}
-
-func getNodesReport(clientset *kubernetes.Clientset) ([]NodeReport, error) {
-	var reports []NodeReport
-
-	nodes, err := clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
-	if err != nil {
-		return nil, errors.Wrap(err, "get nodes")
-	}
-
-	for _, node := range nodes.Items {
-		pods, err := clientset.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{FieldSelector: "spec.nodeName=" + node.ObjectMeta.Name})
-		if err != nil {
-			return nil, errors.Wrap(err, "get pods")
-		}
-
-		report := NodeReport{
-			Node:   node,
-			Pods:   pods.Items,
-			Reqs:   map[string]corev1.ResourceList{},
-			Limits: map[string]corev1.ResourceList{},
-		}
-
-		for _, pod := range pods.Items {
-			report.Reqs[pod.Name], report.Limits[pod.Name] = resourcehelper.PodRequestsAndLimits(&pod)
-		}
-
-		reports = append(reports, report)
-	}
-
-	return reports, nil
-}
-
-func writeCSV(reports []NodeReport) error {
-	w := csv.NewWriter(os.Stdout)
-
-	if err := w.Write([]string{"node", "pod", "cpu_req"}); err != nil {
-		return err
-	}
-
-	for _, node := range reports {
-		allocatable := node.Status.Capacity
-		if len(node.Status.Allocatable) > 0 {
-			allocatable = node.Status.Allocatable
-		}
-
-		for _, pod := range node.Pods {
-			cpuReq := node.Reqs[pod.Name][corev1.ResourceCPU]
-			fractionCPUReq := float64(cpuReq.MilliValue()) / float64(allocatable.Cpu().MilliValue()) * 100
-
-			if err := w.Write([]string{
-				node.Node.ObjectMeta.Name,
-				pod.ObjectMeta.Name,
-				fmt.Sprintf("%d", int64(fractionCPUReq)*10),
-			}); err != nil {
-				return err
-			}
-		}
-	}
-
-	w.Flush()
-
-	if err := w.Error(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
 func run() error {
 	var kubeconfig *string
 	if home := homedir.HomeDir(); home != "" {
@@ -111,6 +39,9 @@ func run() error {
 	} else {
 		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
 	}
+	bind := flag.String("bind", "127.0.0.1:8080", "server bind address")
+	readTimeout := flag.Duration("read-timeout", 2*time.Second, "server read timeout")
+
 	flag.Parse()
 
 	log.Printf("Creating K8s client...")
@@ -119,21 +50,51 @@ func run() error {
 		return errors.Wrap(err, "build config")
 	}
 
-	clientset, err := kubernetes.NewForConfig(config)
+	clientset, err = kubernetes.NewForConfig(config)
 	if err != nil {
 		return errors.Wrap(err, "create client set from config")
 	}
 
-	log.Printf("Getting nodes report...")
-	reports, err := getNodesReport(clientset)
-	if err != nil {
-		return errors.Wrap(err, "get node report")
+	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
+	r.Use(middleware.RealIP)
+	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
+	r.Use(middleware.Compress(5, "application/json"))
+
+	r.Get("/health", handlerHealth)
+	r.Get("/stats", handlerStats)
+
+	srv := &http.Server{
+		Addr:        *bind,
+		ReadTimeout: *readTimeout,
+		Handler:     r,
 	}
 
-	log.Printf("Writing CSV...")
-	if err := writeCSV(reports); err != nil {
-		return errors.Wrap(err, "write CSV report")
+	timeoutContext, doCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer doCancel()
+	shutdownContext, doShutdown := context.WithCancel(timeoutContext)
+
+	go listenForSignals(shutdownContext, doShutdown, srv)
+
+	log.Printf("HTTP server listening on: %v", *bind)
+	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+		log.Fatalf("HTTP server ListenAndServe: %v", err)
 	}
+
+	<-shutdownContext.Done()
 
 	return nil
+}
+
+func listenForSignals(ctx context.Context, doShutdown context.CancelFunc, srv *http.Server) {
+	sigint := make(chan os.Signal, 1)
+	signal.Notify(sigint, os.Interrupt, os.Kill)
+	<-sigint
+
+	log.Println("Shutting down...")
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Printf("HTTP server Shutdown: %v", err)
+	}
+	doShutdown()
 }
