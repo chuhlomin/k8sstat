@@ -62,8 +62,9 @@ func run() error {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Compress(5, "application/csv"))
 
-	r.Get("/health", handlerHealth)
+	r.Get("/", handlerIndex)
 	r.Get("/stats", handlerStats)
+	r.Get("/health", handlerHealth)
 
 	srv := &http.Server{
 		Addr:        *bind,

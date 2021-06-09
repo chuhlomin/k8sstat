@@ -91,7 +91,7 @@ var randomColor = (function(){
   };
 })();
 
-d3.csv("http://127.0.0.1:8080/stats", function(data) {
+d3.csv("/stats", function(data) {
   // X axis
   var x = d3.scaleBand()
     .range([ 0, width ])
