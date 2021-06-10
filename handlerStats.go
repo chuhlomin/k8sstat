@@ -47,7 +47,12 @@ func getNodesReport(clientset *kubernetes.Clientset) ([]NodeReport, error) {
 	}
 
 	for _, node := range nodes.Items {
-		pods, err := clientset.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{FieldSelector: "spec.nodeName=" + node.ObjectMeta.Name})
+		pods, err := clientset.CoreV1().Pods("").List(
+			context.TODO(),
+			metav1.ListOptions{
+				FieldSelector: "spec.nodeName=" + node.ObjectMeta.Name,
+			},
+		)
 		if err != nil {
 			return nil, errors.Wrap(err, "get pods")
 		}
@@ -73,7 +78,18 @@ func createCSV(reports []NodeReport) ([]byte, error) {
 	buf := new(bytes.Buffer)
 	w := csv.NewWriter(buf)
 
-	if err := w.Write([]string{"node", "pod", "cpu_req", "cpu_lim", "mem_req", "mem_lim"}); err != nil {
+	if err := w.Write(
+		[]string{
+			"node",
+			"pod",
+			"cpu_req",
+			"cpu_lim",
+			"mem_req",
+			"mem_lim",
+			"pod_status",
+			"namespace",
+		},
+	); err != nil {
 		return nil, err
 	}
 
@@ -100,6 +116,8 @@ func createCSV(reports []NodeReport) ([]byte, error) {
 				fmt.Sprintf("%d", int64(fractionCPULimit)*10),
 				fmt.Sprintf("%d", int64(fractionMemoryReq)*10),
 				fmt.Sprintf("%d", int64(fractionMemoryLimit)*10),
+				string(pod.Status.Phase),
+				pod.Namespace,
 			}); err != nil {
 				return nil, err
 			}

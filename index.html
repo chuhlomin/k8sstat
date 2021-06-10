@@ -130,6 +130,8 @@ d3.csv("/stats", function(data) {
     tooltip
       .html(
         "Pod: <span class=\"pod-name\">" + d.pod + "</span><br>" + 
+        "Namespace: " + d.namespace + "<br>" +
+        "Status: " + d.pod_status + "<br>" +
         "CPU req: <span class=\"value\">" + d.cpu_req + "m</span><br>" +
         "CPU limit: <span class=\"value\">" + d.cpu_lim + "m</span><br>" +
         "Memory req: <span class=\"value\">" + d.mem_req + "</span><br>" +
